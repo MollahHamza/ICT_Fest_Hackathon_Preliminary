@@ -291,3 +291,28 @@ and 22 so the races fire reliably. The actual defects were the unsynchronized ch
 sequences, which we fixed with proper locking/atomic sections, and we removed the artificial
 delays along with them. The only sleeps we kept are in `notifications.py`, where they simulate
 actual email/audit I/O — the bug there was purely the inconsistent lock order.
+
+---
+
+## Extra hardening (beyond the planted bugs)
+
+### Room stats survive a process restart
+`app/services/stats.py` and `app/routers/rooms.py` (stats read path)
+
+Not one of the deliberately-broken lines, but a real deviation from rule 14 ("room stats always
+equal the values derivable from the bookings themselves"). Room stats were kept only in an
+in-process dict, updated incrementally on each create/cancel. After a process restart the dict
+starts empty while the database still holds every booking, so `GET /rooms/{id}/stats` reported
+`0 / 0` for every room and disagreed with `GET /admin/usage-report` (which reads the DB). We
+confirmed this live: create 3 bookings → stats show them → `docker compose restart` → stats show
+zero.
+
+**Fix:** `stats.get` now derives the count and revenue directly from the bookings table when a DB
+session is available (the stats endpoint always has one), so the answer is correct no matter how
+long the process has been running. In steady-state operation this returns exactly what the
+in-memory counters returned — the incremental counters are updated after each booking is committed,
+so committed-confirmed-bookings already equal the counter — so there is no observable change during
+normal use, only correctness after a restart. We verified it holds for restart-then-read,
+restart-then-create-then-read, and restart-then-cancel-then-read (a DB-authoritative read is
+correct in all three; a cache-with-fallback approach would still be wrong for the create-first
+ordering).
