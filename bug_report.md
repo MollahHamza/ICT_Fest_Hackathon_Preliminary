@@ -316,3 +316,20 @@ normal use, only correctness after a restart. We verified it holds for restart-t
 restart-then-create-then-read, and restart-then-cancel-then-read (a DB-authoritative read is
 correct in all three; a cache-with-fallback approach would still be wrong for the create-first
 ordering).
+
+### Malformed input returned 500 instead of a contract error code
+
+Two code paths crashed with `500 Internal Server Error` on malformed input, where the contract
+specifies a 4xx:
+
+- **Booking datetimes.** `POST /bookings` with an unparseable `start_time`/`end_time` (e.g.
+  `"not-a-date"`) let `datetime.fromisoformat`'s `ValueError` escape. The contract defines
+  `INVALID_BOOKING_WINDOW` (400) for a bad booking window, so the parse is now wrapped to raise
+  that. (`app/routers/bookings.py`)
+- **Token subject.** A validly-signed token whose `sub` claim is missing or not an integer crashed
+  `int(payload["sub"])`. The contract says "missing/invalid/expired/blacklisted tokens → 401", so a
+  token with an unusable subject now returns 401 instead of 500. (`app/auth.py` `get_current_user`
+  and `app/routers/auth.py` refresh)
+
+Both guards only affect inputs that previously errored; every valid request is unchanged (a
+normally-issued token always carries `sub = str(user.id)`).
